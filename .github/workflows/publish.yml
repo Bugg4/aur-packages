@@ -16,66 +16,38 @@ jobs:
       (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'bump '))
     runs-on: ubuntu-latest
-    container: archlinux:base-devel
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history needed for git subtree
+          fetch-depth: 2
 
       - name: Detect package
         id: pkg
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.package }}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            pkg="${{ inputs.package }}"
           else
-            pkg=$(git diff --name-only HEAD~1 | grep -v '^\.github/' | grep -v '^\.gitignore' | grep -v '^\.nvchecker' | cut -d/ -f1 | sort -u | head -1)
-            echo "name=$pkg" >> "$GITHUB_OUTPUT"
+            pkg=$(git diff --name-only HEAD~1 HEAD -- '*/PKGBUILD' | cut -d/ -f1 | sort -u | head -1)
           fi
 
-      - name: Install deps
-        run: |
-          pacman -Syu --noconfirm \
-            pacman-contrib rsync \
-            python python-build python-installer python-wheel python-hatchling \
-            python-yaml python-tqdm python-watchdog \
-            git openssh
+          if [[ -z "$pkg" || ! -f "$pkg/PKGBUILD" ]]; then
+            echo "No valid root package directory was selected" >&2
+            exit 1
+          fi
 
-      - name: Setup SSH
-        shell: bash
-        run: |
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" | tr -d '\r' > "$HOME/.ssh/aur"
-          chmod 600 "$HOME/.ssh/aur"
-          ssh-keygen -y -f "$HOME/.ssh/aur" > /dev/null
+          version=$(sed -n 's/^pkgver=//p' "$pkg/PKGBUILD")
+          echo "name=$pkg" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Update checksums and .SRCINFO
-        run: |
-          pkg="${{ steps.pkg.outputs.name }}"
-          dir="$PWD/$pkg"
-          useradd -m builder
-          chown -R builder:builder "$dir"
-          cd "$dir"
-          su builder -c "cd '$dir' && updpkgsums"
-          su builder -c "cd '$dir' && makepkg --printsrcinfo > .SRCINFO"
-
-      - name: Sync package to AUR
-        shell: bash
-        run: |
-          pkg="${{ steps.pkg.outputs.name }}"
-          source_dir="$PWD/$pkg"
-          aur_dir="$(mktemp -d)"
-          git_metadata_dir="$(mktemp -d)"
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-
-          git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$aur_dir"
-          mv "$aur_dir/.git" "$git_metadata_dir/.git"
-          rsync -a --delete "$source_dir"/ "$aur_dir"/
-          mv "$git_metadata_dir/.git" "$aur_dir/.git"
-
-          git -C "$aur_dir" config user.name "${{ secrets.AUR_USERNAME }}"
-          git -C "$aur_dir" config user.email "${{ secrets.AUR_EMAIL }}"
-          git -C "$aur_dir" add --all
-          git -C "$aur_dir" diff --cached --quiet && exit 0
-          ver=$(grep -Po '(?<=^pkgver=).*' "$source_dir/PKGBUILD")
-          git -C "$aur_dir" commit -m "bump $pkg to v$ver"
-          git -C "$aur_dir" push origin master
+      - name: Publish package
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        with:
+          pkgname: ${{ steps.pkg.outputs.name }}
+          asset_dir: ./${{ steps.pkg.outputs.name }}
+          updpkgsums: true
+          test: false
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "bump ${{ steps.pkg.outputs.name }} to v${{ steps.pkg.outputs.version }}"
