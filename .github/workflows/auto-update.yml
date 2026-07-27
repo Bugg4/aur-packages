@@ -16,36 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write dep helper
-        run: cat > /tmp/dep_diff.py << 'PYEOF'
-import json, sys, re, urllib.request
-
-def parse_deps(url):
-    try:
-        resp = urllib.request.urlopen(url, timeout=15)
-        text = resp.read().decode()
-        m = re.search(r'dependencies\s*=\s*\[(.*?)\]', text, re.DOTALL)
-        if not m: return set()
-        return set(re.findall(r'"([^"]+)"', m.group(1)))
-    except: return set()
-
-pkg, d, cur, latest, entries = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
-url_old, url_new = sys.argv[6], sys.argv[7]
-
-old_deps = parse_deps(url_old)
-new_deps = parse_deps(url_new)
-added = sorted(new_deps - old_deps)
-removed = sorted(old_deps - new_deps)
-
-entry = {"pkg": pkg, "dir": d, "current": cur, "latest": latest}
-if added: entry["deps_added"] = "\n".join(added)
-if removed: entry["deps_removed"] = "\n".join(removed)
-
-u = json.loads(entries)
-u.append(entry)
-print(json.dumps(u))
-PYEOF
-
       - name: Scan packages
         id: scan
         run: |
@@ -67,7 +37,7 @@ PYEOF
             pyproj_old="https://raw.githubusercontent.com/${repo}/v${cur}/pyproject.toml"
             pyproj_new="https://raw.githubusercontent.com/${repo}/${tag}/pyproject.toml"
 
-            entries=$(python3 /tmp/dep_diff.py "$pkg" "$dir" "$cur" "$latest" "$entries" "$pyproj_old" "$pyproj_new")
+            entries=$(python3 scripts/dep_diff.py "$pkg" "$dir" "$cur" "$latest" "$entries" "$pyproj_old" "$pyproj_new")
           done
           echo "matrix={\"include\":$entries}" >> "$GITHUB_OUTPUT"
         env:
