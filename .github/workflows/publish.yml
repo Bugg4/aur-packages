@@ -42,6 +42,8 @@ jobs:
 
       - name: Publish package
         uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        env:
+          SRCDEST: /tmp
         with:
           pkgname: ${{ steps.pkg.outputs.name }}
           asset_dir: ./${{ steps.pkg.outputs.name }}
