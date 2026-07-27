@@ -67,13 +67,14 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
           git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$aur_dir"
-          rsync -a --delete --exclude=.git/ "$source_dir"/ "$aur_dir"/
+          test -d "$aur_dir/.git"
+          rsync -a --delete --filter='P .git' "$source_dir"/ "$aur_dir"/
+          test -d "$aur_dir/.git"
 
-          cd "$aur_dir"
-          git config user.name "${{ secrets.AUR_USERNAME }}"
-          git config user.email "${{ secrets.AUR_EMAIL }}"
-          git add --all
-          git diff --cached --quiet && exit 0
-          ver=$(grep -Po '(?<=^pkgver=).*' PKGBUILD)
-          git commit -m "bump $pkg to v$ver"
-          git push origin master
+          git -C "$aur_dir" config user.name "${{ secrets.AUR_USERNAME }}"
+          git -C "$aur_dir" config user.email "${{ secrets.AUR_EMAIL }}"
+          git -C "$aur_dir" add --all
+          git -C "$aur_dir" diff --cached --quiet && exit 0
+          ver=$(grep -Po '(?<=^pkgver=).*' "$source_dir/PKGBUILD")
+          git -C "$aur_dir" commit -m "bump $pkg to v$ver"
+          git -C "$aur_dir" push origin master
