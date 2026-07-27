@@ -12,53 +12,66 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      matrix: ${{ steps.scan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan packages and detect updates
-        id: build-matrix
-        run: |
-          updates='[]'
-          for pkgdir in */; do
-            pkg=$(basename "$pkgdir")
-            [[ "$pkg" == .* ]] && continue        # skip .github, .gitignore etc.
-            pkg=$(basename "$pkgdir")
-            pkgbuild="$pkgdir/PKGBUILD"
-            [ ! -f "$pkgbuild" ] && continue
+      - name: Write dep helper
+        run: cat > /tmp/dep_diff.py << 'PYEOF'
+import json, sys, re, urllib.request
 
-            cur=$(grep -Po '(?<=^pkgver=).*' "$pkgbuild")
-            [ -z "$cur" ] && continue
+def parse_deps(url):
+    try:
+        resp = urllib.request.urlopen(url, timeout=15)
+        text = resp.read().decode()
+        m = re.search(r'dependencies\s*=\s*\[(.*?)\]', text, re.DOTALL)
+        if not m: return set()
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+    except: return set()
 
-            # Determine upstream source from source URL
-            url=$(grep -Po "(?<=url=')[^']*" "$pkgbuild")
-            repo=$(echo "$url" | sed 's|https://github.com/||')
+pkg, d, cur, latest, entries = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+url_old, url_new = sys.argv[6], sys.argv[7]
 
-            tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null) || continue
-            latest="${tag#v}"
+old_deps = parse_deps(url_old)
+new_deps = parse_deps(url_new)
+added = sorted(new_deps - old_deps)
+removed = sorted(old_deps - new_deps)
 
-            if [ "$latest" != "$cur" ]; then
-              # dep diff
-              parse() { python3 -c "import sys,re; m=re.search(r'dependencies\s*=\s*\[(.*?)\]', sys.stdin.read(), re.DOTALL); [m and [print(d) for d in sorted(re.findall(r'\"([^\"]+)\"', m.group(1)))]]"; }
-              curl -sL "https://raw.githubusercontent.com/$repo/v$cur/pyproject.toml" 2>/dev/null | parse > /tmp/o_$pkg 2>/dev/null
-              curl -sL "https://raw.githubusercontent.com/$repo/$tag/pyproject.toml" 2>/dev/null | parse > /tmp/n_$pkg 2>/dev/null
-              added=$(comm -13 "/tmp/o_$pkg" "/tmp/n_$pkg" 2>/dev/null)
-              removed=$(comm -23 "/tmp/o_$pkg" "/tmp/n_$pkg" 2>/dev/null)
+entry = {"pkg": pkg, "dir": d, "current": cur, "latest": latest}
+if added: entry["deps_added"] = "\n".join(added)
+if removed: entry["deps_removed"] = "\n".join(removed)
 
-              updates=$(echo "$updates" | python3 -c "
-import json, sys
-u = json.load(sys.stdin)
-entry = {'pkg': '$pkg', 'dir': '$pkgdir', 'current': '$cur', 'latest': '$latest'}
-a = '''$added'''.strip()
-r = '''$removed'''.strip()
-if a: entry['deps_added'] = a
-if r: entry['deps_removed'] = r
+u = json.loads(entries)
 u.append(entry)
 print(json.dumps(u))
-")
-            fi
+PYEOF
+
+      - name: Scan packages
+        id: scan
+        run: |
+          entries="[]"
+          for dir in */; do
+            pkg=$(basename "$dir")
+            [[ "$pkg" == .* ]] && continue
+            [ ! -f "$dir/PKGBUILD" ] && continue
+
+            cur=$(grep -Po '(?<=^pkgver=).*' "$dir/PKGBUILD")
+            [ -z "$cur" ] && continue
+            url=$(grep -Po "(?<=url=')[^']*" "$dir/PKGBUILD")
+            repo=$(echo "$url" | sed 's|https://github.com/||')
+            tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null) || continue
+            latest="${tag#v}"
+            [ "$latest" = "$cur" ] && continue
+
+            added="" removed=""
+            pyproj_old="https://raw.githubusercontent.com/${repo}/v${cur}/pyproject.toml"
+            pyproj_new="https://raw.githubusercontent.com/${repo}/${tag}/pyproject.toml"
+
+            entries=$(python3 /tmp/dep_diff.py "$pkg" "$dir" "$cur" "$latest" "$entries" "$pyproj_old" "$pyproj_new")
           done
-          echo "matrix={\"include\":$(echo "$updates" | python3 -c 'import json; print(json.dumps(json.load(sys.stdin)))')}" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":$entries}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   create-prs:
     needs: detect
@@ -70,38 +83,43 @@ print(json.dumps(u))
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bump pkgver
+      - name: Bump version
         run: |
           d="${{ matrix.dir }}"
           ver="${{ matrix.latest }}"
-          sed -i "s/^pkgver=.*/pkgver=$ver/" "$d/PKGBUILD"
+          sed -i "s/^pkgver=.*/pkgver=${ver}/" "$d/PKGBUILD"
           sed -i "s/^pkgrel=.*/pkgrel=1/" "$d/PKGBUILD"
-          [ -f "$d/.SRCINFO" ] && sed -i "s/^\([[:space:]]*\)pkgver = .*/\1pkgver = $ver/" "$d/.SRCINFO"
+          if [ -f "$d/.SRCINFO" ]; then
+            sed -i "s/^\([[:space:]]*\)pkgver = .*/\1pkgver = ${ver}/" "$d/.SRCINFO"
+          fi
 
       - name: Build PR body
         id: msg
         run: |
-          msg="bump ${{ matrix.pkg }} to v${{ matrix.latest }}$'\n'"
-          a="${{ matrix.deps_added }}"
-          r="${{ matrix.deps_removed }}"
-          [ -n "$a" ] && msg+=$'\nNew deps:' && while IFS= read -r d; do msg+=$'\n  + '"$d"; done <<< "$a"
-          [ -n "$r" ] && msg+=$'\nRemoved:' && while IFS= read -r d; do msg+=$'\n  - '"$d"; done <<< "$r"
-          msg+=$'\n\n---\nAuto-detected. Review and merge to publish to AUR.'
-          echo "body<<EOF"$'\n'"$msg"$'\nEOF' >> "$GITHUB_OUTPUT"
+          echo "bump ${{ matrix.pkg }} to v${{ matrix.latest }}" > /tmp/body
+          [ -n "${{ matrix.deps_added }}" ] && { echo "" >> /tmp/body; echo "New deps:" >> /tmp/body; echo "${{ matrix.deps_added }}" | while read d; do echo "  + $d" >> /tmp/body; done; }
+          [ -n "${{ matrix.deps_removed }}" ] && { echo "" >> /tmp/body; echo "Removed:" >> /tmp/body; echo "${{ matrix.deps_removed }}" | while read d; do echo "  - $d" >> /tmp/body; done; }
+          echo "" >> /tmp/body
+          echo "---" >> /tmp/body
+          echo "Auto-detected. Review and merge to publish to AUR." >> /tmp/body
+          body=$(cat /tmp/body)
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$body" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="bump/${{ matrix.pkg }}/v${{ matrix.latest }}"
+          branch="bump/${{ matrix.pkg }}/v${{ matrix.latest }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
+          git checkout -b "$branch"
           git add "${{ matrix.dir }}"
           git commit -m "${{ steps.msg.outputs.body }}"
-          git push origin "$BRANCH"
+          git push origin "$branch"
           gh pr create \
             --title "bump ${{ matrix.pkg }} to v${{ matrix.latest }}" \
             --body "${{ steps.msg.outputs.body }}" \
-            --head "$BRANCH" \
+            --head "$branch" \
             --base master
