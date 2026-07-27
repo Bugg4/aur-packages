@@ -3,10 +3,18 @@ name: Publish to AUR
 on:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package directory name to publish (e.g. python-okf-generator)"
+        required: true
+        type: string
 
 jobs:
   publish:
-    if: startsWith(github.event.head_commit.message, 'bump ')
+    if: |
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'bump '))
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -14,11 +22,15 @@ jobs:
         with:
           fetch-depth: 0   # full history needed for git subtree
 
-      - name: Detect changed package
-        id: changed
+      - name: Detect package
+        id: pkg
         run: |
-          pkg=$(git diff --name-only HEAD~1 | grep -v '^\.github/' | grep -v '^\.gitignore' | grep -v '^\.nvchecker' | cut -d/ -f1 | sort -u | head -1)
-          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.package }}" >> "$GITHUB_OUTPUT"
+          else
+            pkg=$(git diff --name-only HEAD~1 | grep -v '^\.github/' | grep -v '^\.gitignore' | grep -v '^\.nvchecker' | cut -d/ -f1 | sort -u | head -1)
+            echo "name=$pkg" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install deps
         run: |
@@ -36,7 +48,7 @@ jobs:
 
       - name: Update checksums and .SRCINFO
         run: |
-          pkg="${{ steps.changed.outputs.pkg }}"
+          pkg="${{ steps.pkg.outputs.name }}"
           dir="$PWD/$pkg"
           useradd -m builder
           chown -R builder:builder "$dir"
@@ -46,7 +58,7 @@ jobs:
 
       - name: Push to AUR
         run: |
-          pkg="${{ steps.changed.outputs.pkg }}"
+          pkg="${{ steps.pkg.outputs.name }}"
           git config user.name "${{ secrets.AUR_USERNAME }}"
           git config user.email "${{ secrets.AUR_EMAIL }}"
           git add "$pkg/PKGBUILD" "$pkg/.SRCINFO"
