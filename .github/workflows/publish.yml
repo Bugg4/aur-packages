@@ -64,12 +64,13 @@ jobs:
           pkg="${{ steps.pkg.outputs.name }}"
           source_dir="$PWD/$pkg"
           aur_dir="$(mktemp -d)"
+          git_metadata_dir="$(mktemp -d)"
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
           git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$aur_dir"
-          test -d "$aur_dir/.git"
-          rsync -a --delete --filter='P .git' "$source_dir"/ "$aur_dir"/
-          test -d "$aur_dir/.git"
+          mv "$aur_dir/.git" "$git_metadata_dir/.git"
+          rsync -a --delete "$source_dir"/ "$aur_dir"/
+          mv "$git_metadata_dir/.git" "$aur_dir/.git"
 
           git -C "$aur_dir" config user.name "${{ secrets.AUR_USERNAME }}"
           git -C "$aur_dir" config user.email "${{ secrets.AUR_EMAIL }}"
