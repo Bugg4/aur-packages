@@ -25,15 +25,14 @@ jobs:
             [[ "$pkg" == .* ]] && continue
             [ ! -f "$dir/PKGBUILD" ] && continue
 
-            cur=$(grep -Po '(?<=^pkgver=).*' "$dir/PKGBUILD")
+            cur=$(grep -Po '(?<=^pkgver=).*' "$dir/PKGBUILD" || true)
             [ -z "$cur" ] && continue
-            url=$(grep -Po "(?<=url=')[^']*" "$dir/PKGBUILD")
-            repo=$(echo "$url" | sed 's|https://github.com/||')
+            url=$(grep -Po '(?<=^url=")[^"]*' "$dir/PKGBUILD" || true)
+            repo="${url#https://github.com/}"
             tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null) || continue
             latest="${tag#v}"
             [ "$latest" = "$cur" ] && continue
 
-            added="" removed=""
             pyproj_old="https://raw.githubusercontent.com/${repo}/v${cur}/pyproject.toml"
             pyproj_new="https://raw.githubusercontent.com/${repo}/${tag}/pyproject.toml"
 
