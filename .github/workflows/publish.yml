@@ -35,7 +35,7 @@ jobs:
       - name: Install deps
         run: |
           pacman -Syu --noconfirm \
-            pacman-contrib \
+            pacman-contrib rsync \
             python python-build python-installer python-wheel python-hatchling \
             python-yaml python-tqdm python-watchdog \
             git openssh
@@ -57,16 +57,22 @@ jobs:
           su builder -c "cd '$dir' && updpkgsums"
           su builder -c "cd '$dir' && makepkg --printsrcinfo > .SRCINFO"
 
-      - name: Push to AUR
+      - name: Sync package to AUR
         shell: bash
         run: |
-          cd "$GITHUB_WORKSPACE" && git status
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global user.name "${{ secrets.AUR_USERNAME }}"
-          git config --global user.email "${{ secrets.AUR_EMAIL }}"
           pkg="${{ steps.pkg.outputs.name }}"
-          git add "$pkg/PKGBUILD" "$pkg/.SRCINFO"
-          ver=$(grep -Po '(?<=^pkgver=).*' "$pkg/PKGBUILD")
-          git commit -m "bump $pkg to v$ver" --allow-empty
-          git subtree push --prefix="$pkg" \
-            ssh://aur@aur.archlinux.org/"$pkg".git master
+          source_dir="$PWD/$pkg"
+          aur_dir="$(mktemp -d)"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$aur_dir"
+          rsync -a --delete --exclude=.git/ "$source_dir"/ "$aur_dir"/
+
+          cd "$aur_dir"
+          git config user.name "${{ secrets.AUR_USERNAME }}"
+          git config user.email "${{ secrets.AUR_EMAIL }}"
+          git add --all
+          git diff --cached --quiet && exit 0
+          ver=$(grep -Po '(?<=^pkgver=).*' PKGBUILD)
+          git commit -m "bump $pkg to v$ver"
+          git push origin master
