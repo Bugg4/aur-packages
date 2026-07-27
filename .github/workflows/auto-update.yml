@@ -1,0 +1,107 @@
+name: Auto-update
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan packages and detect updates
+        id: build-matrix
+        run: |
+          updates='[]'
+          for pkgdir in */; do
+            pkg=$(basename "$pkgdir")
+            [[ "$pkg" == .* ]] && continue        # skip .github, .gitignore etc.
+            pkg=$(basename "$pkgdir")
+            pkgbuild="$pkgdir/PKGBUILD"
+            [ ! -f "$pkgbuild" ] && continue
+
+            cur=$(grep -Po '(?<=^pkgver=).*' "$pkgbuild")
+            [ -z "$cur" ] && continue
+
+            # Determine upstream source from source URL
+            url=$(grep -Po "(?<=url=')[^']*" "$pkgbuild")
+            repo=$(echo "$url" | sed 's|https://github.com/||')
+
+            tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null) || continue
+            latest="${tag#v}"
+
+            if [ "$latest" != "$cur" ]; then
+              # dep diff
+              parse() { python3 -c "import sys,re; m=re.search(r'dependencies\s*=\s*\[(.*?)\]', sys.stdin.read(), re.DOTALL); [m and [print(d) for d in sorted(re.findall(r'\"([^\"]+)\"', m.group(1)))]]"; }
+              curl -sL "https://raw.githubusercontent.com/$repo/v$cur/pyproject.toml" 2>/dev/null | parse > /tmp/o_$pkg 2>/dev/null
+              curl -sL "https://raw.githubusercontent.com/$repo/$tag/pyproject.toml" 2>/dev/null | parse > /tmp/n_$pkg 2>/dev/null
+              added=$(comm -13 "/tmp/o_$pkg" "/tmp/n_$pkg" 2>/dev/null)
+              removed=$(comm -23 "/tmp/o_$pkg" "/tmp/n_$pkg" 2>/dev/null)
+
+              updates=$(echo "$updates" | python3 -c "
+import json, sys
+u = json.load(sys.stdin)
+entry = {'pkg': '$pkg', 'dir': '$pkgdir', 'current': '$cur', 'latest': '$latest'}
+a = '''$added'''.strip()
+r = '''$removed'''.strip()
+if a: entry['deps_added'] = a
+if r: entry['deps_removed'] = r
+u.append(entry)
+print(json.dumps(u))
+")
+            fi
+          done
+          echo "matrix={\"include\":$(echo "$updates" | python3 -c 'import json; print(json.dumps(json.load(sys.stdin)))')}" >> "$GITHUB_OUTPUT"
+
+  create-prs:
+    needs: detect
+    if: needs.detect.outputs.matrix != '{"include":[]}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump pkgver
+        run: |
+          d="${{ matrix.dir }}"
+          ver="${{ matrix.latest }}"
+          sed -i "s/^pkgver=.*/pkgver=$ver/" "$d/PKGBUILD"
+          sed -i "s/^pkgrel=.*/pkgrel=1/" "$d/PKGBUILD"
+          [ -f "$d/.SRCINFO" ] && sed -i "s/^\([[:space:]]*\)pkgver = .*/\1pkgver = $ver/" "$d/.SRCINFO"
+
+      - name: Build PR body
+        id: msg
+        run: |
+          msg="bump ${{ matrix.pkg }} to v${{ matrix.latest }}$'\n'"
+          a="${{ matrix.deps_added }}"
+          r="${{ matrix.deps_removed }}"
+          [ -n "$a" ] && msg+=$'\nNew deps:' && while IFS= read -r d; do msg+=$'\n  + '"$d"; done <<< "$a"
+          [ -n "$r" ] && msg+=$'\nRemoved:' && while IFS= read -r d; do msg+=$'\n  - '"$d"; done <<< "$r"
+          msg+=$'\n\n---\nAuto-detected. Review and merge to publish to AUR.'
+          echo "body<<EOF"$'\n'"$msg"$'\nEOF' >> "$GITHUB_OUTPUT"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="bump/${{ matrix.pkg }}/v${{ matrix.latest }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "${{ matrix.dir }}"
+          git commit -m "${{ steps.msg.outputs.body }}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "bump ${{ matrix.pkg }} to v${{ matrix.latest }}" \
+            --body "${{ steps.msg.outputs.body }}" \
+            --head "$BRANCH" \
+            --base master

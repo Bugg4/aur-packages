@@ -1,0 +1,8 @@
+# makepkg build artifacts (any package level)
+*.tar.gz
+*.whl
+*.pkg.tar.zst
+src/
+pkg/
+packages/*/src/
+packages/*/pkg/

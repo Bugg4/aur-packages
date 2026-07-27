@@ -1,0 +1,56 @@
+name: Publish to AUR
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  publish:
+    if: startsWith(github.event.head_commit.message, 'bump ')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history needed for git subtree
+
+      - name: Detect changed package
+        id: changed
+        run: |
+          pkg=$(git diff --name-only HEAD~1 | grep -v '^\.github/' | grep -v '^\.gitignore' | grep -v '^\.nvchecker' | cut -d/ -f1 | sort -u | head -1)
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Install deps
+        run: |
+          pacman -Syu --noconfirm \
+            python python-build python-installer python-wheel python-hatchling \
+            python-yaml python-tqdm python-watchdog \
+            git openssh
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          printf "Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  StrictHostKeyChecking accept-new\n" > /etc/ssh/ssh_config
+
+      - name: Update checksums and .SRCINFO
+        run: |
+          pkg="${{ steps.changed.outputs.pkg }}"
+          dir="$PWD/$pkg"
+          useradd -m builder
+          chown -R builder:builder "$dir"
+          cd "$dir"
+          su builder -c "cd '$dir' && updpkgsums"
+          su builder -c "cd '$dir' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Push to AUR
+        run: |
+          pkg="${{ steps.changed.outputs.pkg }}"
+          git config user.name "${{ secrets.AUR_USERNAME }}"
+          git config user.email "${{ secrets.AUR_EMAIL }}"
+          git add "$pkg/PKGBUILD" "$pkg/.SRCINFO"
+          ver=$(grep -Po '(?<=^pkgver=).*' "$pkg/PKGBUILD")
+          git commit -m "bump $pkg to v$ver" --allow-empty
+          git subtree push --prefix="$pkg" \
+            ssh://aur@aur.archlinux.org/"$pkg".git master

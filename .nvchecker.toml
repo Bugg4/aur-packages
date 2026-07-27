@@ -1,0 +1,9 @@
+[__config__]
+oldver = "old.json"
+newver = "new.json"
+
+[python-okf-generator]
+source = "github"
+github = "UmairBaig8/okf-generator"
+use_latest_release = true
+prefix = "v"
