@@ -41,11 +41,12 @@ jobs:
             git openssh
 
       - name: Setup SSH
+        shell: bash
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          printf "Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  StrictHostKeyChecking accept-new\n" > /etc/ssh/ssh_config
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" | tr -d '\r' > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keygen -y -f "$HOME/.ssh/aur" > /dev/null
 
       - name: Update checksums and .SRCINFO
         run: |
