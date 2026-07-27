@@ -35,6 +35,7 @@ jobs:
       - name: Install deps
         run: |
           pacman -Syu --noconfirm \
+            pacman-contrib \
             python python-build python-installer python-wheel python-hatchling \
             python-yaml python-tqdm python-watchdog \
             git openssh
