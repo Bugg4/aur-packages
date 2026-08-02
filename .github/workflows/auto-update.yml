@@ -86,9 +86,11 @@ jobs:
           git checkout -b "$branch"
           git add "${{ matrix.dir }}"
           git commit -m "${{ steps.msg.outputs.body }}"
-          git push origin "$branch"
-          gh pr create \
-            --title "bump ${{ matrix.pkg }} to v${{ matrix.latest }}" \
-            --body "${{ steps.msg.outputs.body }}" \
-            --head "$branch" \
-            --base master
+          git push --force origin "$branch"
+          if ! gh pr view "$branch" --json number -q .number >/dev/null 2>&1; then
+            gh pr create \
+              --title "bump ${{ matrix.pkg }} to v${{ matrix.latest }}" \
+              --body "${{ steps.msg.outputs.body }}" \
+              --head "$branch" \
+              --base master
+          fi
