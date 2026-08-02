@@ -1,6 +1,6 @@
 pkgbase = python-okf-generator
 	pkgdesc = OKF v0.2 knowledge bundle generator - Claude skill + OpenCode integration
-	pkgver = 0.1.51
+	pkgver = 0.1.53
 	pkgrel = 2
 	url = https://github.com/UmairBaig8/okf-generator
 	install = python-okf-generator.install

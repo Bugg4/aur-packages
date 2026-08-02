@@ -1,8 +1,8 @@
 # Maintainer: Bugg4
 
 pkgname=python-okf-generator
-pkgver=0.1.51
-pkgrel=2
+pkgver=0.1.53
+pkgrel=1
 pkgdesc="OKF v0.2 knowledge bundle generator - Claude skill + OpenCode integration"
 arch=('x86_64')
 url="https://github.com/UmairBaig8/okf-generator"
